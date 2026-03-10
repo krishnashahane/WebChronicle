@@ -1,0 +1,18 @@
+{
+  "name": "webchronicle",
+  "version": "1.0.0",
+  "description": "Explore how any website's design evolved over the years",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1"
+  }
+}
