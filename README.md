@@ -93,12 +93,14 @@ WebChronicle aims to become a **time machine for the web**, allowing anyone to e
 
 ## 🧑‍💻 Author
 
-**Krishna Shahane**
-
-Self-taught developer building tools to explore technology, systems, and the internet.
+<a href="https://github.com/krishnashahane/webchronicle">**Krishna Shahane**</a>
 
 ---
 
 ## ⭐ Support
 
 If you find this project interesting, consider giving it a **star ⭐**.
+
+## License
+
+MIT
