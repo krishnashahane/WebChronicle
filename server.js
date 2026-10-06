@@ -22,8 +22,8 @@ app.use((req, res, next) => {
     "frame-ancestors 'self'",
     "object-src 'none'",
     "script-src 'self'",
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-    "font-src 'self' https://fonts.gstatic.com",
+    "style-src 'self' 'unsafe-inline'",
+    "font-src 'self'",
     "img-src 'self' data: https:",
     "frame-src https://web.archive.org",
     "connect-src 'self'"
