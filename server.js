@@ -1,109 +1,200 @@
 const express = require('express');
-const cors = require('cors');
 const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
+const HOST = process.env.HOST || '0.0.0.0';
 
-app.use(cors());
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+const WAYBACK_TIMEOUT_MS = 15000;
+const MAX_URL_LENGTH = 2048;
+const MAX_CDX_ROWS = 100;
+const RATE_WINDOW_MS = 60_000;
+const RATE_LIMIT = 30;
+const requestLog = new Map();
 
-// Fetch available snapshots from Wayback Machine CDX API
-app.get('/api/snapshots', async (req, res) => {
-  const { url } = req.query;
+app.disable('x-powered-by');
 
-  if (!url) {
-    return res.status(400).json({ error: 'URL parameter is required' });
+app.use((req, res, next) => {
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'self'",
+    "object-src 'none'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data: https:",
+    "frame-src https://web.archive.org",
+    "connect-src 'self'"
+  ].join('; '));
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  next();
+});
+
+app.use(express.json({ limit: '10kb' }));
+
+function rateLimit(req, res, next) {
+  if (!req.path.startsWith('/api/')) return next();
+
+  const now = Date.now();
+  const key = req.ip || req.socket.remoteAddress || 'unknown';
+  const existing = requestLog.get(key);
+
+  if (!existing || now - existing.windowStart >= RATE_WINDOW_MS) {
+    requestLog.set(key, { windowStart: now, count: 1 });
+    return next();
   }
 
+  if (existing.count >= RATE_LIMIT) {
+    res.setHeader('Retry-After', '60');
+    return res.status(429).json({ error: 'Too many requests. Please try again shortly.' });
+  }
+
+  existing.count += 1;
+  return next();
+}
+
+app.use(rateLimit);
+
+app.use(express.static(path.join(__dirname, 'public'), {
+  index: 'index.html',
+  dotfiles: 'deny',
+  maxAge: '1h'
+}));
+
+function normalizeUrl(input) {
+  if (typeof input !== 'string' || input.length === 0 || input.length > MAX_URL_LENGTH) {
+    return null;
+  }
+
+  let value = input.trim();
+  if (!/^https?:\/\//i.test(value)) value = `https://${value}`;
+
+  let parsed;
   try {
-    // Normalize URL - strip protocol for CDX query
-    const cleanUrl = url.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    parsed = new URL(value);
+  } catch {
+    return null;
+  }
 
-    // Use collapse=timestamp:4 for ~1 result per year (fast, no filters)
-    const cdxUrl = `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(cleanUrl)}&output=json&fl=timestamp,original&collapse=timestamp:4&limit=100`;
+  if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) return null;
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 45000);
+  parsed.username = '';
+  parsed.password = '';
+  parsed.hash = '';
 
+  return parsed.toString().replace(/\/+$/, '');
+}
+
+function isValidTimestamp(timestamp) {
+  return /^\d{14}$/.test(timestamp);
+}
+
+function buildSnapshotUrl(timestamp, originalUrl) {
+  return `https://web.archive.org/web/${timestamp}/${originalUrl}`;
+}
+
+app.get('/api/snapshots', async (req, res) => {
+  const normalizedUrl = normalizeUrl(req.query.url);
+
+  if (!normalizedUrl) {
+    return res.status(400).json({ error: 'Enter a valid http:// or https:// website URL.' });
+  }
+
+  const cdxUrl = new URL('https://web.archive.org/cdx/search/cdx');
+  cdxUrl.searchParams.set('url', normalizedUrl);
+  cdxUrl.searchParams.set('output', 'json');
+  cdxUrl.searchParams.set('fl', 'timestamp,original');
+  cdxUrl.searchParams.set('filter', 'statuscode:200');
+  cdxUrl.searchParams.set('collapse', 'timestamp:4');
+  cdxUrl.searchParams.set('limit', String(MAX_CDX_ROWS));
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), WAYBACK_TIMEOUT_MS);
+
+  try {
     const response = await fetch(cdxUrl, {
-      headers: { 'User-Agent': 'WebChronicle/1.0' },
       signal: controller.signal,
+      headers: {
+        'User-Agent': 'WebChronicle/1.1 (+https://github.com/krishnashahane/WebChronicle)',
+        Accept: 'application/json'
+      }
     });
 
-    clearTimeout(timeout);
-
     if (!response.ok) {
-      throw new Error(`Wayback Machine API returned ${response.status}`);
+      return res.status(502).json({ error: 'The Wayback Machine could not be queried right now.' });
     }
 
     const data = await response.json();
 
-    if (!data || data.length <= 1) {
-      return res.json({ snapshots: [], message: 'No snapshots found for this URL' });
+    if (!Array.isArray(data) || data.length <= 1) {
+      return res.json({ snapshots: [], total: 0, message: 'No snapshots found for this URL.' });
     }
 
-    // First row is header, skip it
-    const rows = data.slice(1);
+    const rows = data.slice(1).filter(
+      row => Array.isArray(row) && isValidTimestamp(String(row[0])) && typeof row[1] === 'string'
+    );
 
-    // Group by year, pick one representative snapshot per year (prefer mid-year)
-    const byYear = {};
-    for (const row of rows) {
-      const timestamp = row[0];
-      const originalUrl = row[1];
-      const year = timestamp.substring(0, 4);
+    const byYear = new Map();
 
-      if (!byYear[year]) {
-        byYear[year] = [];
-      }
-      byYear[year].push({ timestamp, originalUrl });
+    for (const [timestamp, originalUrl] of rows) {
+      const year = String(timestamp).slice(0, 4);
+      const entries = byYear.get(year) || [];
+      entries.push({ timestamp: String(timestamp), originalUrl });
+      byYear.set(year, entries);
     }
 
-    // Select best snapshot per year (closest to June)
     const snapshots = [];
-    for (const [year, entries] of Object.entries(byYear)) {
+
+    for (const [year, entries] of byYear) {
       entries.sort((a, b) => {
-        const monthA = parseInt(a.timestamp.substring(4, 6), 10);
-        const monthB = parseInt(b.timestamp.substring(4, 6), 10);
+        const monthA = Number(a.timestamp.slice(4, 6));
+        const monthB = Number(b.timestamp.slice(4, 6));
         return Math.abs(monthA - 6) - Math.abs(monthB - 6);
       });
 
       const best = entries[0];
-      const ts = best.timestamp;
-      const dateStr = `${ts.substring(0, 4)}-${ts.substring(4, 6)}-${ts.substring(6, 8)}`;
-
       snapshots.push({
-        year: parseInt(year, 10),
-        timestamp: ts,
-        date: dateStr,
-        url: `https://web.archive.org/web/${ts}/${best.originalUrl}`,
-        thumbnailUrl: `https://web.archive.org/web/${ts}im_/${best.originalUrl}`,
-        originalUrl: best.originalUrl,
+        year: Number(year),
+        timestamp: best.timestamp,
+        date: `${best.timestamp.slice(0, 4)}-${best.timestamp.slice(4, 6)}-${best.timestamp.slice(6, 8)}`,
+        url: buildSnapshotUrl(best.timestamp, best.originalUrl),
+        thumbnailUrl: `https://web.archive.org/web/${best.timestamp}im_/${best.originalUrl}`,
+        originalUrl: best.originalUrl
       });
     }
 
-    // Sort by year ascending
     snapshots.sort((a, b) => a.year - b.year);
+    return res.json({ snapshots, total: rows.length });
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      return res.status(504).json({ error: 'The Wayback Machine request timed out. Please try again.' });
+    }
 
-    res.json({ snapshots, total: rows.length });
-  } catch (err) {
-    console.error('Error fetching snapshots:', err.message);
-    res.status(500).json({ error: `Failed to fetch snapshots: ${err.message}` });
+    console.error('Wayback request failed:', error);
+    return res.status(502).json({ error: 'Unable to retrieve archived snapshots right now.' });
+  } finally {
+    clearTimeout(timeout);
   }
 });
 
-// Proxy endpoint to check if a snapshot screenshot is available
-app.get('/api/screenshot', async (req, res) => {
-  const { timestamp, url } = req.query;
-  if (!timestamp || !url) {
-    return res.status(400).json({ error: 'timestamp and url are required' });
+app.get('/api/screenshot', (req, res) => {
+  const timestamp = String(req.query.timestamp || '');
+  const normalizedUrl = normalizeUrl(req.query.url);
+
+  if (!isValidTimestamp(timestamp) || !normalizedUrl) {
+    return res.status(400).json({ error: 'Invalid timestamp or website URL.' });
   }
 
-  const screenshotUrl = `https://web.archive.org/web/${timestamp}im_/${url}`;
-  res.json({ screenshotUrl });
+  return res.json({
+    screenshotUrl: `https://web.archive.org/web/${timestamp}im_/${normalizedUrl}`
+  });
 });
 
-app.listen(PORT, () => {
-  console.log(`WebChronicle server running at http://localhost:${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`WebChronicle server running on http://localhost:${PORT}`);
 });
