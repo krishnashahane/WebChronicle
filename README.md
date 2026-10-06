@@ -1,106 +1,114 @@
 # ⏳🌐 WebChronicle
 
-**Travel through the history of the internet.**
+Explore how websites changed over time through the **Internet Archive Wayback Machine**.
 
-WebChronicle lets you enter any website and explore how its design, structure, and layout evolved over time through an interactive timeline visualization.
+WebChronicle turns a website URL into a year-by-year timeline of archived captures. Browse representative snapshots, open them in a larger preview, and jump through a site's history without manually searching the archive.
 
-Instead of manually browsing archives, WebChronicle creates a **visual history of a website's evolution.**
+## Features
 
----
+- **Historical timeline** — one representative capture per available year.
+- **Wayback snapshots** — opens archived pages directly from the Internet Archive.
+- **Lazy-loaded previews** — avoids loading every archived page at once.
+- **Full-screen viewer** — use Previous/Next or the keyboard arrow keys.
+- **Quick examples** — Google, Apple, Amazon, The New York Times, and Wikipedia.
+- **No database required** — snapshot metadata comes directly from the Wayback CDX API.
 
-## 🚀 Features
+## Requirements
 
-* ⏳ **Website Timeline**
-  Explore a visual timeline showing how a site changed year by year.
+- Node.js **18+**
+- Network access to `web.archive.org`
 
-* 🌐 **Historical Snapshots**
-  View archived versions of websites across different time periods.
+## Run locally
 
-* 📊 **Design Evolution Tracking**
-  Compare layout, UI, and branding changes.
-
-* 🔍 **Side-by-Side Comparison**
-  Compare two versions of a site (e.g., 2012 vs 2024).
-
-* ⚡ **Instant Website Lookup**
-  Enter a URL and generate its historical timeline.
-
----
-
-## 🧠 How It Works
-
-1. User enters a website URL
-2. WebChronicle queries web archive datasets
-3. Historical snapshots are collected
-4. Timeline engine organizes snapshots by date
-5. Interactive UI visualizes the evolution
-
----
-
-## 🕰 Timeline Example
-
-```
-2008 ─ Minimal HTML layout
-2012 ─ Added navigation redesign
-2016 ─ Responsive mobile design
-2020 ─ Modern UI + animations
-2024 ─ AI-driven personalization
+```bash
+git clone https://github.com/krishnashahane/WebChronicle.git
+cd WebChronicle
+npm ci
+npm start
 ```
 
-Users can move through the timeline and explore each version.
+Open `http://localhost:3000`.
 
----
+Development mode:
 
-## 🛠 Tech Stack
+```bash
+npm run dev
+```
 
-**Frontend**
+Syntax checks:
 
-* React
-* Timeline visualization libraries
-* WebGL / UI rendering
+```bash
+npm run check
+```
 
-**Backend**
+## How it works
 
-* Node.js / Python
-* Web scraping
-* archive dataset integration
+```text
+Browser
+   |
+   | GET /api/snapshots?url=...
+   v
+Express server
+   |
+   | validated request
+   v
+Wayback CDX API
+   |
+   v
+Yearly snapshot metadata
+   |
+   v
+Timeline + archived-page previews
+```
 
-**Data Sources**
+WebChronicle queries successful captures and groups them by year. When multiple captures are available in a year, it selects the one whose month is closest to June.
 
-* Web archives
-* historical snapshots
-* site metadata
+The application does **not** permanently store archived website contents.
 
----
+## API
 
-## 📊 Example Use Cases
+### `GET /api/snapshots?url=<website>`
 
-* Study how big tech products evolved
-* Design inspiration
-* UX research
-* Web history exploration
-* Competitive analysis
+Returns representative Wayback captures grouped by year.
 
----
+Example:
 
-## 🎯 Vision
+```text
+/api/snapshots?url=https%3A%2F%2Fexample.com
+```
 
-The internet evolves every day, but its history is scattered.
+### `GET /api/screenshot?timestamp=<14-digit timestamp>&url=<website>`
 
-WebChronicle aims to become a **time machine for the web**, allowing anyone to explore the evolution of digital products.
+Returns the corresponding Wayback screenshot URL for a validated timestamp and URL.
 
----
+## Security
 
-## 🧑‍💻 Author
+The server:
 
-<a href="https://github.com/krishnashahane/webchronicle">**Krishna Shahane**</a>
+- validates and normalizes user-supplied URLs;
+- accepts only HTTP(S) targets;
+- removes URL credentials and fragments before archive queries;
+- uses a bounded upstream timeout;
+- applies a small in-memory API rate limit;
+- limits JSON request-body size;
+- applies a restrictive Content Security Policy and standard security headers;
+- disables Express's `X-Powered-By` header;
+- returns generic upstream errors instead of leaking internal error details.
 
----
+Archived pages are displayed in sandboxed iframes. The frontend constructs dynamic DOM nodes with `textContent` and DOM properties instead of injecting archive-controlled strings as HTML.
 
-## ⭐ Support
+## Limitations
 
-If you find this project interesting, consider giving it a **star ⭐**.
+Some archived websites may not render correctly in an iframe because captures can have missing assets, redirects, or archive/browser restrictions. Use **Open in Wayback Machine** for the most complete archive view.
+
+The current UI intentionally shows one representative capture per year rather than every capture.
 
 ## License
 
 MIT
+
+## Author
+
+**Krishna Shahane**
+
+GitHub: https://github.com/krishnashahane
